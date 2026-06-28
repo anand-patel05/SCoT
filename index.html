@@ -1,0 +1,391 @@
+<!-- Rename it to:
+
+index.html
+
+Then replace these placeholder images:
+
+static/images/iitb.png
+static/images/eccv2026.png
+static/images/teaser.png
+static/images/method.png
+static/images/results.png
+
+Also update the href="#" links for your paper, arXiv, code, and author webpages. -->
+
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="description"
+        content="SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA.">
+  <meta name="keywords" content="Continual Learning, Visual Question Answering, VQA, Task Vectors, Model Merging, Multimodal Learning">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SCoT</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+
+  <!-- Optional favicon -->
+  <link rel="icon" href="./static/images/favicon.svg">
+
+  <!-- Scripts -->
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+
+  <style>
+    .publication-title {
+      line-height: 1.15;
+    }
+
+    .highlight {
+      color: #8a078a;
+      font-weight: 700;
+    }
+
+    .logo-row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+      margin-bottom: 2rem;
+    }
+
+    .logo-row img {
+      max-height: 110px;
+      object-fit: contain;
+    }
+
+    .venue {
+      margin-top: 0.75rem;
+      font-weight: 600;
+      color: #555;
+    }
+
+    .teaser-image,
+    .paper-figure {
+      width: 100%;
+      border-radius: 8px;
+    }
+
+    .caption {
+      margin-top: 0.75rem;
+      color: #555;
+      font-size: 1rem;
+    }
+
+    .section-title {
+      margin-bottom: 1rem;
+    }
+
+    .placeholder-note {
+      background: #f6f6f6;
+      border: 1px dashed #bbb;
+      padding: 1rem;
+      border-radius: 8px;
+      color: #666;
+      text-align: center;
+      margin-top: 0.75rem;
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- Top navigation
+<nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+
+  <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="#abstract">Abstract</a>
+      <a class="navbar-item" href="#method">Method</a>
+      <a class="navbar-item" href="#results">Results</a>
+      <a class="navbar-item" href="#bibtex">BibTeX</a>
+    </div>
+  </div>
+</nav> -->
+
+<!-- Header -->
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+
+      <!-- Optional logos. Replace these images with your actual files.
+      <div class="logo-row">
+        <img src="./static/images/iitb.png" alt="IIT Bombay logo">
+        <img src="./static/images/eccv2026.png" alt="ECCV 2026 logo">
+      </div> -->
+
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+
+          <h1 class="title is-1 publication-title">
+            <span class="highlight">SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA</span>
+          </h1>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <a href="#">Anand Patel</a><sup>1</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://about.uq.edu.au/experts/49133">Moloud Abdar</a><sup>2</sup>,
+            </span>
+            <span class="author-block">
+              <a href="https://biplab-banerjee.github.io/index.html">Biplab Banerjee</a><sup>1</sup>
+            </span>
+          </div>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block"><sup>1</sup>Indian Institute of Technology Bombay, India</span>
+            <br>
+            <span class="author-block"><sup>2</sup>The University of Queensland, Australia</span>
+          </div>
+
+          <div class="venue">
+            Accepted at ECCV 2026
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+
+              <!-- Paper link -->
+              <span class="link-block">
+                <a href="#"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper</span>
+                </a>
+              </span>
+
+              <!-- arXiv link -->
+              <span class="link-block">
+                <a href="#"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="ai ai-arxiv"></i>
+                  </span>
+                  <span>arXiv</span>
+                </a>
+              </span>
+
+              <!-- Code link -->
+              <span class="link-block">
+                <a href="https://github.com/anand-patel05/SCoT"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="fab fa-github"></i>
+                  </span>
+                  <span>Code</span>
+                </a>
+              </span>
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Abstract -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            Continual learning in visual question answering (VQACL) requires a single
+            vision&ndash;language model to acquire new multimodal reasoning skills from a
+            task stream while retaining prior capabilities. However, na&iuml;ve sequential
+            finetuning suffers from catastrophic forgetting. Existing continual VQA
+            methods primarily rely on replay or parameter regularization but largely
+            overlook how task-specific updates accumulate and interact in parameter
+            space, particularly whether successive updates are synergistic or conflicting
+            across layers.To address this, we introduce <strong>SCoT</strong>
+            (<strong>S</strong>imilarity-guided <strong>C</strong>onflict-aware
+            <strong>T</strong>ask Consolidation), a continual learning framework that
+            represents each task as a parameter update relative to a pretrained anchor
+            model and integrates tasks through layer-wise parameter-space reasoning.
+            For each layer, SCoT measures alignment between incoming and accumulated
+            task vectors, removes only destructive components via conditional projection
+            when conflicts arise, and adaptively modulates consolidation strength using
+            similarity-guided weighting. This preserves beneficial transfer while suppressing harmful interference,
+            enabling stable yet adaptive continual learning. Experiments on VQAv2 and
+            NExT-QA demonstrate strong continual VQA performance, reducing forgetting to
+            near-zero (<strong>0.07</strong> and <strong>-1.90</strong>) while achieving
+            rare positive backward transfer (<strong>+5.64</strong> and
+            <strong>+6.97</strong>), outperforming strong continual-learning and
+            task-vector baselines.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Teaser -->
+<section class="section" id="teaser">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-full-width">
+        <h2 class="title is-3 section-title">Background</h2>
+        <div class="content has-text-centered">
+          <img src="./static/images/teaser.png"
+              class="teaser-image"
+              alt="SCoT teaser figure">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Method -->
+<section class="section" id="method">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-full-width">
+        <h2 class="title is-3 section-title">Methodology</h2>
+
+        <!-- <div class="content has-text-justified">
+          <p>
+            Given an anchor model parameterized by <em>θ</em><sub>0</sub>, SCoT represents
+            the knowledge learned from each task using an anchor-relative task vector
+            <em>t</em><sub>i</sub> = <em>θ</em><sub>i</sub> − <em>θ</em><sub>0</sub>.
+            The consolidated model is updated online by combining the current task
+            vector with the accumulated consolidated offset.
+          </p>
+
+          <p>
+            For each layer, SCoT measures the cosine alignment between the new task
+            vector and the previous consolidated direction. If the alignment is
+            negative, the conflicting component is projected out before consolidation.
+            The update strength is then adapted based on task similarity, allowing
+            aligned tasks to contribute more strongly while reducing interference from
+            conflicting tasks.
+          </p>
+
+          <p>
+            Finally, SCoT applies depth-aware stabilization, recognizing that different
+            encoder and decoder layers contribute differently to multimodal continual
+            learning. This design allows the model to preserve general multimodal
+            representations while adapting task-specific reasoning components.
+          </p>
+        </div> -->
+
+        <!-- <div class="content has-text-centered"> -->
+        <div class="content has-text-justified">
+          <img src="./static/images/model.png"
+               class="paper-figure"
+               alt="SCoT method overview">
+          <!-- <h4 class="subtitle has-text-centered caption">
+            SCoT performs continual task consolidation directly in parameter space.
+            After fine-tuning on task <em>T<sub>i</sub></em>, a task vector
+            <em>t<sub>i</sub></em> is computed relative to the initial parameters
+            <em>&theta;<sub>0</sub></em>. Task directions are integrated into a single
+            consolidated offset <em>m<sub>i</sub></em> using conflict-aware, layer-wise
+            consolidation to mitigate task interference. The shared model
+            <em>&theta;&#772;<sub>i</sub> = &theta;<sub>0</sub> + m<sub>i</sub></em>
+            aggregates knowledge from tasks <em>{1,...,i}</em> and initializes learning
+            for the next task.
+          </h4> -->
+          <!-- <div class="placeholder-note">
+            Replace <code>./static/images/method.png</code> with your method figure.
+          </div> -->
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Results -->
+<section class="section" id="results">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-full-width">
+        <h2 class="title is-3 section-title">Results</h2>
+        <div class="content has-text-centered">
+          <img src="./static/images/results.png"
+               class="paper-figure"
+               alt="SCoT quantitative results">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Analysis -->
+<section class="section" id="ananlysis">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column is-full-width">
+        <h2 class="title is-3 section-title">Analysis</h2>
+        <div class="content has-text-centered">
+          <img src="./static/images/analysis.png"
+               class="paper-figure"
+               alt="SCoT analysis">
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- BibTeX -->
+<section class="section" id="bibtex">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+<pre><code>@inproceedings{patel2026scot,
+  title     = {SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA},
+  author    = {Patel, Anand and Abdar, Moloud and Banerjee, Biplab},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2026}
+}</code></pre>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <a class="icon-link" href="#">
+        <i class="fas fa-file-pdf"></i>
+      </a>
+      <a class="icon-link" href="#">
+        <i class="fab fa-github"></i>
+      </a>
+    </div>
+
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content has-text-centered">
+          <p>
+            This website template is adapted from the
+            <a href="https://github.com/nerfies/nerfies.github.io">Nerfies project page</a>.
+          </p>
+          <p>
+            Please update paper, arXiv, code, author website, logo, and figure links before deployment.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
