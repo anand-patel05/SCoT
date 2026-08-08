@@ -1,6 +1,6 @@
 # SCoT Project Page
 
-This repository contains the project page for:
+This is the official repository for SCoT:
 
 **SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA**
 
