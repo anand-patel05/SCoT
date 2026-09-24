@@ -2,7 +2,7 @@
 # SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA
 
 <p align="center">
-  <a href="https://eccv.ecva.net/Conferences/2026/AcceptedPapers">
+  <a href="https://eccv.ecva.net/virtual/2026/poster/4496">
     <img src="https://img.shields.io/badge/ECCV-2026-blue" alt="ECCV 2026">
   </a>
   <a href="https://anand-patel05.github.io/SCoT/">
@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <a href="https://anand-patel05.github.io/">Anand Patel</a>,
+  Anand Patel,
   Moloud Abdar,
   Biplab Banerjee
 </p>
@@ -28,21 +28,9 @@
 
 This repository provides the official PyTorch implementation of **SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA**, accepted at ECCV 2026.
 
-## 📌 Overview
+## 📌 Abstract
 
-Continual Visual Question Answering (VQACL) requires a vision-language model to sequentially acquire new reasoning capabilities while preserving previously learned knowledge.
-
-However, sequential fine-tuning often leads to catastrophic forgetting due to interference between task-specific parameter updates.
-
-We propose **SCoT**, a task-vector-based consolidation framework that explicitly models the interaction between incoming and previously accumulated task updates.
-
-SCoT introduces three key components:
-
-- **Layer-wise Similarity Estimation:** Measures the alignment between incoming and accumulated task vectors.
-- **Conflict-aware Projection:** Conditionally removes conflicting components of incoming task vectors to mitigate destructive interference.
-- **Adaptive Task Consolidation:** Dynamically adjusts consolidation weights according to layer-wise similarity, balancing knowledge retention and adaptation.
-
-SCoT enables effective continual learning while mitigating catastrophic forgetting and promoting positive backward transfer.
+Continual learning in visual question answering (VQACL) requires a single vision–language model to acquire new multimodal reasoning skills from a task stream while retaining prior capabilities. However, naïve sequential finetuning suffers from catastrophic forgetting. Existing continual VQA methods primarily rely on replay or parameter regularization but largely overlook how task-specific updates accumulate and interact in parameter space, particularly whether successive updates are synergistic or conflicting across layers.To address this, we introduce SCoT (Similarity-guided Conflict-aware Task Consolidation), a continual learning framework that represents each task as a parameter update relative to a pretrained anchor model and integrates tasks through layer-wise parameter-space reasoning. For each layer, SCoT measures alignment between incoming and accumulated task vectors, removes only destructive components via conditional projection when conflicts arise, and adaptively modulates consolidation strength using similarity-guided weighting. This preserves beneficial transfer while suppressing harmful interference, enabling stable yet adaptive continual learning. Experiments on VQAv2 and NExT-QA demonstrate strong continual VQA performance, reducing forgetting to near-zero (0.07 and -1.90) while achieving rare positive backward transfer (+5.64 and +6.97), outperforming strong continual-learning and task-vector baselines.
 
 For additional details, please refer to our [project page](https://anand-patel05.github.io/SCoT/).
 
@@ -51,7 +39,7 @@ For additional details, please refer to our [project page](https://anand-patel05
 ### 1. Clone the repository
 
 ```bash
-git clone <SCOT_REPOSITORY_URL>
+git clone https://github.com/anand-patel05/SCoT.git
 cd SCoT
 ```
 
@@ -62,7 +50,7 @@ Please refer to the [VQACL repository](https://github.com/zhangxi1997/VQACL) for
 For example:
 
 ```bash
-conda create -n scot python=3.7
+conda create -n scot python=3.10
 conda activate scot
 
 pip install -r requirements.txt
@@ -77,12 +65,6 @@ SCoT uses the VL-T5 backbone for continual VQA experiments.
 Please follow the pretrained backbone download instructions provided in the official VQACL repository:
 
 **[VQACL — Setup and Backbone Download](https://github.com/zhangxi1997/VQACL#setup)**
-
-If the corresponding download script is included in this repository, the backbone can be downloaded using:
-
-```bash
-python download_backbones.py
-```
 
 Ensure that the downloaded checkpoints are placed in the appropriate directories before starting the experiments.
 
@@ -113,48 +95,15 @@ After downloading the required resources, organize them according to the directo
 
 ## 🚀 Training and Evaluation
 
-SCoT is evaluated under the standard continual VQA and novel composition settings.
+# Training with 1 gpu for VQA v2
+cd VL-T5/
+bash scripts/VQACL_train.sh 1 # Standard Training
+bash scripts/VQACL_COMP_train.sh 1 # Training for Novel Composition Testing (Group-1)
 
-### VQAv2
-
-We consider two evaluation settings:
-
-- **Standard Testing:** Evaluates the model's ability to retain previously learned knowledge while acquiring new tasks.
-- **Novel Composition Testing:** Evaluates generalization to previously unseen combinations of visual concepts and reasoning skills.
-
-The experiments follow the VQACL continual learning task sequence.
-
-Training involves sequential task adaptation followed by similarity-guided, conflict-aware task-vector consolidation.
-
-### NExT-QA
-
-SCoT is also evaluated on NExT-QA to assess its effectiveness in continual video question answering.
-
-The experimental setup follows the corresponding VQACL task partitions.
-
-### Running experiments
-
-Please use the training and evaluation scripts provided in this repository.
-
-<!--
-Add the exact commands from the released SCoT implementation here.
-
-For each dataset, document:
-- Standard training
-- Novel composition training
-- Standard evaluation
-- Novel composition evaluation
-- Replay memory configuration
-- Checkpoint and output directories
--->
-
-## 📊 Results
-
-SCoT is evaluated using Final Average Performance (AP), Average Forgetting (AF), and Backward Transfer (BWT).
-
-Our experiments on VQAv2 and NExT-QA demonstrate effective knowledge consolidation with reduced forgetting and positive backward transfer.
-
-For detailed quantitative comparisons, ablation studies, and experimental analysis, please refer to our paper and [project page](https://anand-patel05.github.io/SCoT/).
+# Testing with 1 gpu for VQA v2
+cd VL-T5/
+bash scripts/VQACL.sh 1 # Standard Testing
+bash scripts/VQACL_COMP.sh 1 # Novel Composition Testing (Group-1)
 
 ## 📝 Citation
 
