@@ -1,5 +1,5 @@
 
-# SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA
+## SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA
 
 <p align="center">
   <a href="https://eccv.ecva.net/virtual/2026/poster/4496">
@@ -14,10 +14,6 @@
   Anand Patel,
   Moloud Abdar,
   Biplab Banerjee
-</p>
-
-<p align="center">
-  <strong>European Conference on Computer Vision (ECCV), 2026</strong>
 </p>
 
 This repository provides the official PyTorch implementation of **SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA**, accepted at ECCV 2026.
