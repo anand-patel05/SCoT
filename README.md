@@ -20,12 +20,6 @@
   <strong>European Conference on Computer Vision (ECCV), 2026</strong>
 </p>
 
-<p align="center">
-  <a href="https://anand-patel05.github.io/SCoT/">Project Page</a>
-  |
-  <a href="https://eccv.ecva.net/Conferences/2026/AcceptedPapers">ECCV 2026</a>
-</p>
-
 This repository provides the official PyTorch implementation of **SCoT: Similarity-guided Conflict-aware Task Consolidation for Continual VQA**, accepted at ECCV 2026.
 
 ## 📌 Abstract
@@ -46,8 +40,6 @@ cd SCoT
 ### 2. Set up the environment
 
 Please refer to the [VQACL repository](https://github.com/zhangxi1997/VQACL) for the original environment configuration and dependencies.
-
-For example:
 
 ```bash
 conda create -n scot python=3.10
@@ -95,6 +87,7 @@ After downloading the required resources, organize them according to the directo
 
 ## 🚀 Training and Evaluation
 
+```bash
 # Training with 1 gpu for VQA v2
 cd VL-T5/
 bash scripts/VQACL_train.sh 1 # Standard Training
@@ -104,6 +97,7 @@ bash scripts/VQACL_COMP_train.sh 1 # Training for Novel Composition Testing (Gro
 cd VL-T5/
 bash scripts/VQACL.sh 1 # Standard Testing
 bash scripts/VQACL_COMP.sh 1 # Novel Composition Testing (Group-1)
+```
 
 ## 📝 Citation
 
