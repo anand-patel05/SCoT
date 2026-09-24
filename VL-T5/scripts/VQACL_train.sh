@@ -1,0 +1,40 @@
+name=scot_vqav2_std      
+
+output=output/vqacl/$name
+
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export HF_HUB_DISABLE_TELEMETRY=1           
+
+echo $CUDA_VISIBLE_DEVICES                  
+
+# export PYTHONPATH=$PYTHONPATH:./src
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:32,garbage_collection_threshold:0.8
+export PYTHONPATH=$PYTHONPATH:$(pwd)/VL-T5/src
+
+torchrun \
+    --nproc_per_node=$1 \
+    --master_port 12345 \
+    -m vqacl_tv \
+        --distributed --multiGPU \
+        --train karpathy_train \
+        --valid karpathy_val \
+        --test karpathy_test \
+        --optim adamw \
+        --warmup_ratio 0.1 \
+        --clip_grad_norm 5 \
+        --lr 1e-4 \
+        --epochs 3 \
+        --num_workers 4 \
+        --backbone 'models/t5-base' \
+        --output $output ${@:2} \
+        --num_beams 5 \
+        --batch_size 80 \
+        --valid_batch_size 100 \
+        --from_scratch \
+        --comp_cate G-1 \
+        --now_train \
+        --gradient_accumulation_steps 1 \
+        --fp16 \
+        --memory \
+        --m_size 5000
