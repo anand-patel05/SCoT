@@ -1,0 +1,978 @@
+
+import torch.backends.cudnn as cudnn
+import torch.multiprocessing as mp
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import os
+import collections
+from pathlib import Path
+from packaging import version
+
+import numpy as np
+from tqdm import tqdm
+import torch
+import torch.nn as nn
+import logging
+import shutil
+from pprint import pprint
+
+from param import parse_args
+
+from vqa_data_memory import get_loader, get_loader_test, VQADataset, get_loader_memory
+from utils import load_state_dict, LossMeter, set_global_logging_level
+import dist_utils
+import json
+import random
+
+proj_dir = Path(__file__).resolve().parent.parent
+
+
+_use_native_amp = False
+_use_apex = False
+
+# Check if Pytorch version >= 1.6 to switch between Native AMP and Apex
+if version.parse(torch.__version__) < version.parse("1.6"):
+    from transormers.file_utils import is_apex_available
+    if is_apex_available():
+        from apex import amp
+    _use_apex = True
+else:
+    _use_native_amp = True
+    from torch.cuda.amp import autocast
+
+from trainer_base import TrainerBase
+#  10 task
+from Question_type import All_task, Comp_task, show_results_matrix, evaluate_metric, Category_splits, ImgId_cate_map, random_dic
+
+from task_vector_euc import TaskVector, consolidate_layer
+
+# Restrict task arithmetic to the hyperbolic tangent-space adapters. Matching
+# by substring keeps this valid for both plain and DDP (``module.``) state keys.
+
+# TASK_VECTOR_LAYER_NAMES = (
+#     "hyperbolic_prototype.to_tangent.",
+#     "hyperbolic_prototype.from_tangent.",
+# )
+
+TASK_VECTOR_LAYER_NAMES = None
+
+def cycle(iterable):
+    # iterate with shuffling
+    while True:
+        for i in iterable:
+            yield i
+
+def rename_keys(state_dict, old_prefix, new_prefix):
+    new_state_dict = {}
+    for k, v in state_dict.items():
+        if k.startswith(old_prefix):
+            new_key = new_prefix + k[len(old_prefix):]
+            new_state_dict[new_key] = v
+        else:
+            new_state_dict[k] = v
+    return new_state_dict
+
+class Trainer(TrainerBase):
+    def __init__(self, args, coco_Ours, train_loader=None, val_loader=None, test_loader=None, train=True):
+        self.result_matrix = {}
+        self.task_list = []
+        for task in coco_Ours:
+            self.result_matrix[task] = {}
+            self.task_list.append(task)
+
+        self.train_loader_dict = {}
+        self.val_loader_dict = {}
+        self.test_loader_dict = {}
+        self.test_loader_dict_all = {}
+
+        self.train_dset = VQADataset(args.train, True)
+        self.val_dset = VQADataset(args.valid, True)
+        self.test_dset = VQADataset(args.test, True)
+
+        super().__init__(
+            args,
+            train=train)
+
+        if not self.verbose:
+            set_global_logging_level(logging.ERROR, ["transformers"])
+
+        from vqa_model import VLT5VQA
+
+        model_kwargs = {}
+        if 't5' in args.backbone:
+            model_class = VLT5VQA
+
+        config = self.create_config()
+        self.tokenizer = self.create_tokenizer()
+        if 'bart' in self.args.tokenizer:
+            num_added_toks = 0
+            if config.use_vis_order_embedding:
+                additional_special_tokens = [f'<extra_id_{i}>' for i in range(100-1, -1, -1)] + \
+                        [f'<vis_extra_id_{i}>' for i in range(100-1, -1, -1)]
+                special_tokens_dict = {'additional_special_tokens': additional_special_tokens}
+                num_added_toks = self.tokenizer.add_special_tokens(special_tokens_dict)
+
+                config.default_obj_order_ids = self.tokenizer.convert_tokens_to_ids([f'<vis_extra_id_{i}>' for i in range(100)])
+
+        self.model = self.create_model(model_class, config, **model_kwargs)
+
+        if 't5' in self.args.tokenizer:
+            self.model.resize_token_embeddings(self.tokenizer.vocab_size)
+        elif 'bart' in self.args.tokenizer:
+            self.model.resize_token_embeddings(self.model.model.shared.num_embeddings + num_added_toks)
+
+        self.model.tokenizer = self.tokenizer
+
+        # Load Checkpoint
+        self.start_epoch = None
+        if args.load is not None:
+            ckpt_path = args.load + '.pth'
+            self.load_checkpoint(ckpt_path)
+
+        # --------------------- random seed --------------------#
+        if self.args.from_scratch:
+            if args.ifseed:
+                self.init_weights(seed=args.seed, ifseed=True)
+            else:
+                self.init_weights()
+
+        # GPU Options
+        if self.verbose:
+            print(f'Model Launching at GPU {self.args.gpu}')
+            from time import time
+            start = time()
+        self.model = self.model.to(args.gpu)
+
+        if args.multiGPU:
+            if args.distributed:
+                self.model = DDP(self.model, device_ids=[args.gpu],
+                                 find_unused_parameters=True
+                                 )
+        
+        # Save initial weights for resetting later                              -- changes --
+        self.initial_state_dict = self.model.state_dict()
+        
+        if self.verbose:
+            print(f'It took {time() - start:.1f}s')
+        self.iftrain = train
+        self.coco_Ours = coco_Ours
+
+        self.task_iftrain = {}
+        for task in self.coco_Ours:
+            self.task_iftrain[task] = 0
+
+        self.task_total_num = torch.zeros(len(self.task_list))
+
+        self.M = args.m_size
+        self.Examplar_set = {'G1':[], 'G2':[], 'G3':[], 'G4':[], 'G5':[]}
+        self.composition_test_cate = args.comp_cate
+
+        self.task_vectors = []
+        self.curr_tv = None
+        self.m_prev = None
+        self.adaptive_alpha = True
+
+
+    def train(self, load=False):
+        loss_meter = LossMeter()
+        loss_meter_mem = LossMeter()
+        loss_meter_mem_Q = LossMeter()
+        loss_meter_mem_V = LossMeter()
+        if load == True:
+            latest_task = args.checkpoint
+            latest_task_idx = self.task_list.index(latest_task)
+            for idx, task in enumerate(self.task_list):
+                if idx <=latest_task_idx:
+                    self.task_iftrain[task] = 1
+
+            checkpoint_model = self.args.output + '/' + args.checkpoint+'_LAST'
+            # if not os.path.exists(self.args.output):
+            #     os.mkdir(self.args.output)
+            # best_path = os.path.join(self.args.output, task+'_BEST') # BEST or LAST?
+            self.load(checkpoint_model)
+            if self.verbose:
+                print('Success to load the checkpoint from the task ', latest_task)
+
+        else:
+            latest_task_idx = -1
+
+        for task_idx, task in enumerate(
+            self.task_list[latest_task_idx + 1:], start=latest_task_idx + 1
+        ):  # retain global task indices when resuming
+            torch.cuda.empty_cache()
+            if self.verbose:
+                print('======================== Now is task "', task, '" ========================')
+            self.task_iftrain[task] = 1
+
+            if task_idx == 0:
+                if not os.path.exists(self.args.output):
+                    # os.mkdir(self.args.output)
+                    os.makedirs(self.args.output, exist_ok=True)
+                model_path = os.path.join(self.args.output, "initial_weights.pth")
+                torch.save(self.initial_state_dict, model_path)
+                print(f"Intial model weights stored at {model_path}")
+            else:
+                ft_model_path = os.path.join(self.args.output, f"{self.task_list[task_idx - 1]}_ft.pth")
+                model = torch.load(ft_model_path)
+                model = rename_keys(model, "module.vis_encoder", "module.encoder")
+                loaded_state = self.model.load_state_dict(model, strict=False)
+                
+                print("Missing keys:", loaded_state.missing_keys)
+                print("Unexpected keys:", loaded_state.unexpected_keys)
+                print(f"\n********************** Finetuned Skilled VLT5 Model Loaded for task {task} **********************\n") 
+
+            # Memory
+            if args.memory and task_idx > 0:
+                # Rebuild a balanced replay set from every previously seen
+                # task. This gives fresh runs and resumed runs identical index
+                # semantics and avoids relying on an unsaved in-memory list.
+                each_memory = int(self.M / task_idx)
+                each_memory_for_cate = int(each_memory / len(Category_splits))
+                self.Examplar_set = {cate: [] for cate in Category_splits}
+
+                for previous_task in self.task_list[:task_idx]:
+                    data_info_path = (
+                        'datasets/vqa/Partition_Q/karpathy_train_'
+                        f'{previous_task}.json'
+                    )
+                    with open(data_info_path) as f:
+                        data_info_dicts = json.load(f)
+                    random.shuffle(data_info_dicts)
+
+                    for cate in Category_splits:
+                        selected = []
+                        for example in data_info_dicts:
+                            img_id = example['img_id']
+                            if (
+                                img_id in ImgId_cate_map
+                                and ImgId_cate_map[img_id] in Category_splits[cate]
+                            ):
+                                selected.append(example)
+                                if len(selected) >= each_memory_for_cate:
+                                    break
+                        self.Examplar_set[cate].append(selected)
+
+                All_examplar = [
+                    example
+                    for category_tasks in self.Examplar_set.values()
+                    for task_examples in category_tasks
+                    for example in task_examples
+                ]
+                if self.verbose:
+                    print('Loaded balanced replay from Partition_Q_v3......')
+                    print("# The size of the cate Memory:", len(All_examplar))
+            else:
+                All_examplar = []
+                each_memory = 0
+
+            # Load the data
+            if self.verbose:
+                print("#Loading ", task)
+
+            train_loader, total_num_Q = get_loader(
+                args,
+                self.coco_Ours,
+                [],
+                self.train_dset,
+                split=args.train, mode='train', batch_size=args.batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.train_topk,
+                task=task,
+            )
+
+            self.task_total_num[task_idx] = total_num_Q
+
+
+            if args.valid_batch_size is not None:
+                self.valid_batch_size = args.valid_batch_size
+            else:
+                self.valid_batch_size = args.batch_size
+            if self.verbose:
+                print(f'Building val loader at GPU {args.gpu}')
+            val_loader, _ = get_loader(
+                args,
+                self.coco_Ours,
+                [],
+                self.val_dset,
+                split=args.valid, mode='val', batch_size=self.valid_batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.valid_topk,
+                task=task,
+            )
+
+            if self.verbose:
+                print(f'Building test loader at GPU {args.gpu}')
+            test_loader, _ = get_loader(
+                args,
+                self.coco_Ours,
+                [],
+                self.test_dset,
+                split=args.test, mode='val', batch_size=self.valid_batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.valid_topk,
+                task=task,
+            )
+            self.test_loader_dict[task] = test_loader
+
+            test_loader = get_loader_test(
+                args,
+                self.coco_Ours,
+                [],
+                self.test_dset,
+                split=args.test, mode='val', batch_size=self.valid_batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.valid_topk,
+                task=task,
+            )
+            self.test_loader_dict_all[task] = test_loader
+
+            if self.verbose:
+                print("#Loading ", task)
+            memory_loader = get_loader_memory(
+                args,
+                self.coco_Ours,
+                All_examplar,
+                self.train_dset,
+                split=args.train, mode='train', batch_size=args.batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.train_topk,
+            )  #G1-G5
+
+            if self.verbose:
+                # loss_meter = LossMeter()
+                # loss_meter_mem = LossMeter()
+                # loss_mem_V = LossMeter()
+                # loss_mem_Q_new = LossMeter()
+                # loss_mem_V_new = LossMeter()
+                best_valid = 0.
+                best_epoch = 0
+
+                if 't5' in self.args.backbone:
+                    if self.args.use_vision:
+                        project_name = "VLT5_VQA"
+                    else:
+                        project_name = "T5_VQA"
+                elif 'bart' in self.args.backbone:
+                    if self.args.use_vision:
+                        project_name = "VLBart_VQA"
+                    else:
+                        project_name = "Bart_VQA"
+
+                src_dir = Path(__file__).resolve().parent
+                base_path = str(src_dir.parent)
+                src_dir = str(src_dir)
+                # wandb.save(os.path.join(src_dir + "/*.py"), base_path=base_path)
+
+            if self.args.distributed:
+                dist.barrier()
+
+            global_step = 0
+            Category_splits_random = random_dic(Category_splits)
+
+            for idx, cateGroup in enumerate(Category_splits_random):
+                torch.cuda.empty_cache()
+                if self.verbose:
+                    print('-------- Training the cate group ', cateGroup,' of task ', task,'------')
+
+                self.train_loader_cate = train_loader[cateGroup]
+                self.val_loader_cate = val_loader[cateGroup]
+                self.memory_loader_cate = memory_loader[cateGroup]
+
+                # Optimizer
+                if self.iftrain:
+                    if self.args.distributed:
+                        total_train_num = len(self.train_loader_cate) * self.args.batch_size
+                    else:
+                        total_train_num = len(self.train_loader_cate.dataset)
+                    if len(self.memory_loader_cate.dataset) > 0:
+                        total_train_num *= 2
+                    self.optim, self.lr_scheduler = self.create_optimizer_and_scheduler(total_train_num)
+
+                    if self.args.fp16 and _use_native_amp:
+                        self.scaler = torch.cuda.amp.GradScaler()
+                    elif _use_apex:
+                        self.model, self.optim = amp.initialize(
+                            self.model, self.optim, opt_level='O1', verbosity=self.verbose)
+
+                if cateGroup == self.composition_test_cate and task != self.task_list[latest_task_idx+1]:
+                    if self.verbose:
+                        print("-------- Pass the training for", cateGroup, 'for after composition testing.--------')
+                    continue
+                
+                for epoch in range(self.args.epochs):
+                    torch.cuda.empty_cache()
+                    if self.start_epoch is not None:
+                        epoch += self.start_epoch
+                    self.model.train()
+
+                    if self.args.distributed:
+                        self.train_loader_cate.sampler.set_epoch(epoch)
+                    if self.verbose:
+                        pbar = tqdm(total=len(self.train_loader_cate), ncols=120)
+
+                    epoch_results = {
+                        'loss': 0.,
+                    }
+
+                    quesid2ans = {}
+
+                    if len(self.memory_loader_cate.dataset) > 0:
+                        now_loader = zip(self.train_loader_cate, cycle(self.memory_loader_cate))
+                        if self.verbose:
+                            print('Use memory loader')
+                    else:
+                        now_loader = self.train_loader_cate
+
+                    for now_batch in now_loader:
+                        if len(now_batch) == 2:
+                            batch, mem_batch = now_batch
+                        else:
+                            batch = now_batch
+                            mem_batch = None
+
+                        results, lr = self.train_step(batch, epoch_results, task_idx, each_memory)
+                        if mem_batch:
+                            results_mem, lr = self.train_step(mem_batch, epoch_results, task_idx, each_memory)
+
+                        if self.verbose:
+                            loss_meter.update(results['loss'].item())
+                            desc_str = f'Epoch {epoch} | LR {lr:.6f}'
+                            desc_str += f' | Loss {loss_meter.val:4f}'
+                            if 'loss_memory' in results:
+                                loss_memory_Q, loss_memory_V = results['loss_memory']
+                                loss_meter_mem_Q.update(loss_memory_Q.item())
+                                loss_meter_mem_V.update(loss_memory_V.item())
+                                desc_str += f' | Loss_mem_Q {loss_meter_mem_Q.val:4f}'
+                                desc_str += f' | Loss_mem_V {loss_meter_mem_V.val:4f}'
+                            else:
+                                loss_meter_mem_Q.update(-1)
+                                loss_meter_mem_V.update(-1)
+                            if mem_batch:
+                                loss_meter_mem.update(results_mem['loss'].item())
+                                desc_str += f' | Loss_mem {loss_meter_mem.val:4f}'
+                            else:
+                                loss_meter_mem.update(-1)
+
+
+                            pbar.set_description(desc_str)
+                            pbar.update(1)
+
+                        if self.args.distributed:
+                            dist.barrier()
+                        # break
+
+                    if self.verbose:
+                        pbar.close()
+
+                    if self.verbose:
+                        print("\nLoss:", loss_meter.val,
+                              ' Loss_mem:', loss_meter_mem.val,
+                            #   ' Loss_mem_Q:', loss_meter_mem_Q.val,
+                            #   ' Loss_mem_V:', loss_meter_mem_V.val
+                              )
+
+                    # Validation
+                    score_dict = self.evaluate(self.val_loader_cate)
+
+                    if self.verbose:
+                        valid_score = score_dict['topk_score'] * 100.
+                        valid_score_raw = score_dict['overall']
+
+                        log_str = ''
+                        log_str += "Group %s Epoch %d: Valid Raw %0.2f Topk %0.2f" % (cateGroup, epoch, valid_score_raw, valid_score)
+
+                        print(log_str)
+
+                    if self.args.distributed:
+                        dist.barrier()
+
+            if self.verbose:
+                self.save(task + "_LAST")
+            if self.args.distributed:
+                dist.barrier()
+
+            initial_model_wt = os.path.join(self.args.output, "initial_weights.pth")   
+            finetuned_ckpt_path = os.path.join(self.args.output, f"{task}_LAST.pth")
+
+            # task_vector = TaskVector(
+            #     pretrained_checkpoint=initial_model_wt,
+            #     finetuned_checkpoint=finetuned_ckpt_path,
+            #     include_key_substrings=TASK_VECTOR_LAYER_NAMES,
+            # )
+
+            task_vector = TaskVector(
+                pretrained_checkpoint=initial_model_wt,
+                finetuned_checkpoint=finetuned_ckpt_path
+            )
+
+            if not task_vector.vector:
+                raise RuntimeError(
+                    "No to_tangent/from_tangent parameters matched the task-vector filter"
+                )
+            self.task_vectors.append(task_vector)
+            self.curr_tv = task_vector
+            
+            print(f"***************** Calculated contextual task vector for task {task} ************************")
+
+            # ========= Testing =========
+            self.test(task, task_idx)
+
+        if self.verbose:
+            try:
+                model = self.model.module if hasattr(self.model, "module") else self.model
+                Q_prototype = model.Q_prototype
+                V_prototype = model.V_prototype
+                torch.save(Q_prototype, args.output + "/Q_prototype.pt")
+                torch.save(V_prototype, args.output + "/V_prototype.pt")
+                print(" ======= Saved the learned prototypes ======= ")
+            except Exception as e:
+                print('save prototype error', e)
+
+
+    def train_step(self, batch, epoch_results, task_idx, each_memory):
+        torch.cuda.empty_cache()
+        if self.args.fp16 and _use_native_amp:
+            with autocast():
+                if self.args.distributed:
+                    # results = self.model.module.train_step(batch)
+                    results = self.model.module.train_step(batch, task_idx, self.args.proto_alpha, self.args.proto_beta, each_memory, self.task_total_num)
+                else:
+                    # results = self.model.train_step(batch)
+                    results = self.model.module.train_step(batch, task_idx, self.args.proto_alpha, self.args.proto_beta, each_memory, self.task_total_num)
+        else:  # this
+            if self.args.distributed:
+                results = self.model.module.train_step(batch, task_idx, self.args.proto_alpha, self.args.proto_beta, each_memory, self.task_total_num)
+            else:
+                # results = self.model.train_step(batch)
+                results = self.model.module.train_step(batch, task_idx, self.args.proto_alpha, self.args.proto_beta, each_memory, self.task_total_num)
+
+
+        loss = results['loss']
+        if task_idx == 0:
+            lambda_Q = 0.0
+        else:
+            lambda_Q = self.args.lambda_Q
+        lambda_V = self.args.lambda_V
+        lambda_Q_new = self.args.lambda_Q_new
+        lambda_V_new = self.args.lambda_V_new
+
+        if 'loss_memory' in results:
+            (loss_memory_Q, loss_memory_V) = results['loss_memory']
+            loss = loss + lambda_Q * loss_memory_Q + lambda_V * loss_memory_V
+        if 'loss_memory_new' in results:
+            (loss_memory_Q_new, loss_memory_V_new) = results['loss_memory_new']
+            loss = loss + lambda_Q_new * loss_memory_Q_new + lambda_V_new * loss_memory_V_new
+
+        if hasattr(self, 'additional_training_loss'):
+            loss_curvature = self.additional_training_loss()
+            loss = loss + loss_curvature
+            results['loss_curvature'] = loss_curvature.detach()
+
+        # Divide loss by gradient accumulation steps                -- Updated by Anand
+        loss = loss / self.args.gradient_accumulation_steps
+        if self.args.fp16 and _use_native_amp:
+            self.scaler.scale(loss).backward()
+        elif self.args.fp16 and _use_apex:
+            with amp.scale_loss(loss, self.optim) as scaled_loss:
+                scaled_loss.backward()
+        else:  # this
+            loss.backward()
+
+        # Update parameters only after gradient_accumulation_steps
+        if not hasattr(self.args, 'step_counter'):
+            self.args.step_counter = 0
+        self.args.step_counter += 1
+
+        if self.args.step_counter % self.args.gradient_accumulation_steps == 0:
+            # Update Parameters
+            if self.args.clip_grad_norm > 0:
+                if self.args.fp16 and _use_native_amp:
+                    self.scaler.unscale_(self.optim)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.args.clip_grad_norm)
+                elif self.args.fp16 and _use_apex:
+                    torch.nn.utils.clip_grad_norm_(amp.master_params(
+                        self.optim), self.args.clip_grad_norm)
+                else:  # this
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.args.clip_grad_norm)
+
+            if self.args.fp16 and _use_native_amp:
+                self.scaler.step(self.optim)
+                self.scaler.update()
+            else:  # this
+                self.optim.step()
+
+            if self.lr_scheduler:
+                self.lr_scheduler.step()
+            # This also clears auxiliary optimizer parameters such as HoroCon's
+            # learnable per-layer curvatures.
+            self.optim.zero_grad(set_to_none=True)
+
+        # ----------
+        # self.model.module.Q_prototype_param.data.clamp_(0, 1)
+        # self.model.module.V_prototype_param.data.clamp_(0, 1)
+
+        # global_step += 1
+
+        for k, v in results.items():
+            if k in epoch_results:
+                epoch_results[k] += v.item()
+
+        if self.lr_scheduler:
+            if version.parse(torch.__version__) >= version.parse("1.4"):
+                lr = self.lr_scheduler.get_last_lr()[0]
+            else:
+                lr = self.lr_scheduler.get_lr()[0]
+        else:
+            try:
+                lr = self.optim.get_lr()[0]
+            except AttributeError:
+                lr = self.args.lr
+        return results, lr
+
+    def Test(self, load=False):
+
+        for task_idx, task in enumerate(self.task_list):
+            if self.verbose:
+                print('======================== Now is task "', task, '" ========================')
+
+            test_loader = get_loader_test(
+                args,
+                self.coco_Ours,
+                [],
+                self.test_dset,
+                split=args.test, mode='val', batch_size=args.valid_batch_size,
+                distributed=args.distributed, gpu=args.gpu,
+                workers=args.num_workers,
+                topk=args.valid_topk,
+                task=task,
+            )
+            self.test_loader_dict_all[task] = test_loader
+
+        # ========= Testing =========
+        self.test(self.task_list[-1])
+
+
+    def test(self, task, task_idx=None, comp=False):
+        # Test Set
+        os.makedirs(self.args.output, exist_ok=True)
+        # last_path = os.path.join(self.args.output, task + '_LAST')
+        # self.load(last_path)
+
+        if not self.args.now_train:
+            self.model.module.Q_prototype = torch.load(self.args.output+'/Q_prototype.pt')
+            self.model.module.V_prototype = torch.load(self.args.output+'/V_prototype.pt')
+
+        #### =============================
+
+        initial_model_wt = os.path.join(self.args.output, "initial_weights.pth")
+        current_task_idx = task_idx   
+
+        # Apply combined task vector to get new model with adapted weights
+        if not self.args.now_train:                    
+            final_model = torch.load(f"/home/vis-comp/24m2119/VQACL/VL-T5/snap/vqacl_tv_epoch3/final_model_tv.pth")
+            print("\n *************** Final Model is Loaded ***************\n")
+        else:                                                                             # Test mode in Training
+            if len(self.task_vectors) == 0:
+                raise ValueError("No task vectors found")
+
+            
+            # # Task Arithmetic (Averaging)
+            # comb_task_vec = self.task_vectors[0]                                           # can optimize this part
+            # for tv in self.task_vectors[1 : current_task_idx+1]:
+            #     comb_task_vec = comb_task_vec + tv
+            
+            # final_model = comb_task_vec.apply_to(initial_model_wt, scaling_coef=(1/(task_idx + 1)))
+            # print(f"\n*************** Final Model is Ready with scaling_coef {1/(task_idx + 1)} ***************\n")
+            
+            
+            # if current_task_idx == 0:
+            #     m_i = self.curr_tv
+            #     self.m_prev = m_i   # saving for next task
+            # else:
+            #     m_prev = self.m_prev  
+            #     t_i = self.curr_tv  
+
+            #     # ---- Step 1: conflict score ----  # OLD WAY (problem ??)
+            #     s_i = t_i.dot(m_prev) / (t_i.norm() * m_prev.norm() + 1e-8)
+
+            #     # delta_i = t_i + (-m_prev)
+            #     # s_i = delta_i.dot(m_prev) / (delta_i.norm() * m_prev.norm() + 1e-8)
+
+            #     print(f"\n Similarity Score: {s_i}")
+
+            #     # ---- Step 2: adaptive alpha ----
+            #     alpha_min, alpha_max = 0.1, 0.5
+            #     alpha_i = alpha_min + (alpha_max - alpha_min) * (s_i + 1) / 2
+            #     alpha_i = float(torch.clamp(torch.tensor(alpha_i), alpha_min, alpha_max))
+
+            #     # ---- Step 3: weighted online mean ----
+            #     m_i = m_prev.scale(1 - alpha_i) + t_i.scale(alpha_i)
+            #     self.m_prev = m_i   # saving for next task
+
+
+            if current_task_idx == 0:
+                # First task: no conflict, no projection
+                print("\n ================= Layerwise Consolodidation =================== \n")
+                m_i = self.curr_tv
+                self.m_prev = m_i
+            else:
+                m_prev = self.m_prev        # consolidated task vector
+                t_i = self.curr_tv          # current task vector
+
+                # -------- Layer-wise conflict handling --------
+                new_vec = {}
+
+                # group parameters by layer
+                m_layers = m_prev.group_by_layer()
+                t_layers = t_i.group_by_layer()
+
+                # ========
+                for layer_id in t_layers:
+                    t_l = t_i.get_layer_vector(layer_id)
+                    m_l = m_prev.get_layer_vector(layer_id)
+
+                    # ---- Step 2: layer-wise conflict score ----
+                    norm_m = m_l.norm()
+                    norm_t = t_l.norm()
+
+                    if norm_m > 0 and norm_t > 0:
+                        s_l = (t_l.dot(m_l) / (norm_t * norm_m + 1e-8)).item()
+                    else:
+                        s_l = 1.0
+
+                    alpha_min, alpha_max = 0.08, 0.45
+                    layer_vec = consolidate_layer(
+                        previous=m_l,
+                        current=t_l,
+                        layer_id=layer_id,
+                        similarity=s_l,
+                        alpha_min=alpha_min,
+                        alpha_max=alpha_max,
+                    )
+                    new_vec.update(layer_vec)
+                # ========
+
+                # build consolidated task vector
+                m_i = TaskVector(vector=new_vec)
+                self.m_prev = m_i
+
+            # -------- Reconstruct model --------
+            final_model = m_i.apply_to(initial_model_wt, scaling_coef=1.0)
+        # -------------------------------------------------------------------- #
+
+        # Replace self.model with final_model
+        load_result = self.model.load_state_dict(final_model, strict=False)
+        if args.now_train:
+            print(
+                f"\nApplied task arithmetic to {len(final_model)} tangent-adapter "
+                "tensors; all other model tensors retain their latest trained values."
+            )
+            if load_result.unexpected_keys:
+                print("\nUnexpected keys:", load_result.unexpected_keys)
+        else:
+            print("\nMissing keys:", load_result.missing_keys)
+            print("\nUnexpected keys:", load_result.unexpected_keys)
+
+        if args.now_train:
+            # Save the final model if this is the last task           
+            if task_idx == 9:    
+                save_path = os.path.join(self.args.output, "final_model_tv.pth")
+                torch.save(self.model.state_dict(), save_path)
+                print(f"\n*************************** Final model saved at: {save_path} ***************************\n")
+            else:
+                #Save all finetuned skilled model for next task
+                save_path = os.path.join(self.args.output, f"{task}_ft.pth")
+                torch.save(self.model.state_dict(), save_path)
+                print(f"\n*************************** Finetuned skilled model saved for next task {self.task_list[task_idx + 1]} ***************************\n")
+            # -------------------------------------------------------------------- #
+        
+        #### =============================
+        
+        # =========== test for all previous tasks
+        flag = 1
+        for test_task in self.coco_Ours:
+            if self.args.now_train:
+                if self.task_iftrain[test_task] == 0:
+                    flag = 0
+            if flag == 1:
+                self.test_loader = self.test_loader_dict_all[test_task]
+                if self.verbose:
+                    print(' ===== Test for the task "' + test_task + '"  ======')
+
+                quesid2ans = self.predict(self.test_loader)
+
+                if self.verbose:
+                    evaluator = self.test_loader.evaluator
+                    score_dict = evaluator.evaluate(quesid2ans)
+
+                    acc_dict_all = evaluator.evaluate_raw(quesid2ans)
+                    acc_dict_answerable = evaluator.evaluate_raw(quesid2ans, is_topk_optimal=True)
+                    acc_dict_unanswerable = evaluator.evaluate_raw(quesid2ans, is_topk_optimal=False)
+
+                    wandb_log_dict = {}
+                    wandb_log_dict['Test/overall'] = acc_dict_all['overall']
+                    wandb_log_dict['Test/topk_optimal'] = acc_dict_answerable['overall']
+                    wandb_log_dict['Test/topk_not_optimal'] = acc_dict_unanswerable['overall']
+
+                    for qtype, score in acc_dict_all['perQuestionType'].items():
+                        wandb_log_dict[f'Test_Qtypes/{qtype}'] = score
+                    for atype, score in acc_dict_all['perAnswerType'].items():
+                        if atype == 'yes/no':
+                            atype = 'yes_no'
+                        wandb_log_dict[f'Test_Atypes/{atype}'] = score
+
+                    print(test_task, wandb_log_dict)
+                    self.result_matrix[task][test_task] = acc_dict_all['overall']
+
+                if self.args.distributed:
+                    dist.barrier()
+
+
+    def predict(self, loader, dump_path=None):
+        self.model.eval()
+        with torch.no_grad():
+            quesid2ans = {}
+            if self.verbose:
+                pbar = tqdm(total=len(loader), ncols=120, desc="Prediction---")
+            for i, batch in enumerate(loader):
+                if self.args.distributed:
+                    results = self.model.module.test_step(batch)
+                else:
+                    results = self.model.test_step(batch)
+
+                pred_ans = results['pred_ans'] # generated_sents
+                ques_ids = batch['question_ids']
+
+                for qid, ans in zip(ques_ids, pred_ans):
+                    quesid2ans[qid] = ans
+
+                if self.verbose:
+                    pbar.update(1)
+
+            if self.verbose:
+                pbar.close()
+
+        if self.args.distributed:
+            dist.barrier()
+
+        qid2ans_list = dist_utils.all_gather(quesid2ans)
+        if self.verbose:
+            quesid2ans = {}
+            for qid2ans in qid2ans_list:
+                for k, v in qid2ans.items():
+                    quesid2ans[k] = v
+
+            if dump_path is not None:
+                evaluator = loader.evaluator
+                evaluator.dump_result(quesid2ans, dump_path)
+
+        return quesid2ans
+
+    def evaluate(self, loader, dump_path=None):
+        quesid2ans = self.predict(loader, dump_path)
+
+        if self.verbose:
+            evaluator = loader.evaluator
+            acc_dict = evaluator.evaluate_raw(quesid2ans)
+            topk_score = evaluator.evaluate(quesid2ans)
+            acc_dict['topk_score'] = topk_score
+
+            return acc_dict
+
+def main_worker(gpu, args):
+    # GPU is assigned
+    args.gpu = gpu
+    args.rank = int(os.environ.get("RANK", gpu))
+    if gpu == 0:
+        print(f'Process Launching at GPU {gpu}')
+
+    if args.distributed:
+        torch.cuda.set_device(args.gpu)
+        dist.init_process_group(backend='nccl')
+
+    if gpu == 0:
+        print(f'Building train loader at GPU {gpu}')
+
+    coco_Ours = All_task
+
+
+    trainer = Trainer(args, coco_Ours, train=True)
+
+    if args.now_train:
+        if args.checkpoint != 'None':
+            trainer.train(load=True)
+        else:
+            trainer.train(load=False)
+
+        if trainer.verbose:
+            print('#------------------ result_matrix --------------------#')
+            show_results_matrix(trainer.result_matrix)
+            path = args.output + 'results_matrix.json'
+            # save_results_matrix(trainer.result_matrix, path)
+            metric_dict = evaluate_metric(trainer.result_matrix)
+            print('#------  Metric  ------#')
+            print('Incremental avg accuracy:', metric_dict['Incre_avg_acc'])
+            print('*** Avg accuracy ***', metric_dict['Avg_acc'])
+            print('Incremental avg forget:', metric_dict['Incre_avg_forget'])
+            print('*** Avg forget ***', metric_dict['Avg_forget'])
+            print('6Q Incremental avg accuracy:', metric_dict['Incre_avg_acc_6Q'])
+            print('*** _6Q Avg accuracy ***', metric_dict['Avg_acc_6Q'])
+            print('_6Q Incremental avg forget:', metric_dict['Incre_avg_forget_6Q'])
+            print('*** _6Q Avg forget ***', metric_dict['Avg_forget_6Q'])
+
+    else:
+        if args.checkpoint!='None':
+            trainer.Test(load=True)
+        else:
+            trainer.Test(load=False)
+
+        if trainer.verbose:
+            try:
+                print('#------------------ Final Performance --------------------#')
+                print(trainer.result_matrix['q_causal'])
+                acc = 0
+                for key in trainer.result_matrix['q_causal']:
+                    acc += trainer.result_matrix['q_causal'][key]
+                print('AP:', round(acc/10, 4))
+
+            except:
+                pass
+
+if __name__ == "__main__":
+    cudnn.benchmark = True
+    args = parse_args()
+    args.world_size = int(os.environ.get("WORLD_SIZE", 1))
+    local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    if local_rank in [0, -1]:
+        print(args)
+
+        comments = []
+        if args.load is not None:
+            ckpt_str = "_".join(args.load.split('/')[-3:])
+            comments.append(ckpt_str)
+
+        else:
+            ckpt_str = 'scrach'
+            comments.append(ckpt_str)
+        if args.comment != '':
+            comments.append(args.comment)
+        comment = '_'.join(comments)
+
+        from datetime import datetime
+        current_time = datetime.now().strftime('%b%d_%H-%M')
+
+        run_name = f'{current_time}_GPU{args.world_size}'
+        if len(comments) > 0:
+            run_name += f'_{comment}'
+
+        args.run_name = run_name
+
+    if args.distributed:
+        main_worker(local_rank, args)  # pass local_rank from env, not args.local_rank
