@@ -1,0 +1,23 @@
+# Core ML libraries
+torch==2.1.2
+torchvision==0.16.2
+
+# HuggingFace Transformer stack
+transformers==4.9.2
+sentencepiece
+
+# Logging and visualization
+wandb
+tqdm
+matplotlib==3.7.3
+
+# Data utilities
+numpy==1.26.4
+pandas==1.5.3
+pyyaml
+h5py
+sacrebleu
+wget
+
+# Evaluation tools
+git+https://github.com/j-min/language-evaluation@master
